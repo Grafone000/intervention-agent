@@ -1,0 +1,6 @@
+pydantic>=2.0
+pandas
+openpyxl
+matplotlib
+python-docx
+pytest

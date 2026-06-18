@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+*.log
+
+# DA VALUTARE: escludere file Excel in data/ se contengono dati sensibili
+# Decommenta la riga seguente dopo conferma con il team
+# data/*.xlsx
+# data/*.xls
