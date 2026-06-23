@@ -22,26 +22,19 @@ def _buf(fig: plt.Figure) -> io.BytesIO:
 
 
 def grafico_spesa_ante_post(
-    labels: List[str],
-    spese_ante: List[float],
-    spese_post: List[float],
+    spesa_ante_totale: float,
+    spesa_post_totale: float,
 ) -> io.BytesIO:
     """
-    Barre verticali grigie: Spesa ante (grigio scuro) vs Spesa post (grigio chiaro)
-    raggruppate per fabbricato/tipologia.
+    Due barre: spesa totale ante (grigio scuro) e spesa totale post (grigio chiaro).
     """
-    x = list(range(len(labels)))
-    width = 0.35
+    fig, ax = plt.subplots(figsize=(5, 5))
 
-    fig, ax = plt.subplots(figsize=(max(8, len(labels) * 0.9), 5))
+    ax.bar([0], [spesa_ante_totale], width=0.4, color="#555555", label="Spesa ante [€/anno]")
+    ax.bar([1], [spesa_post_totale], width=0.4, color="#AAAAAA", label="Spesa post [€/anno]")
 
-    ax.bar([i - width / 2 for i in x], spese_ante, width,
-           color="#555555", label="Spesa ante [€/anno]")
-    ax.bar([i + width / 2 for i in x], spese_post, width,
-           color="#AAAAAA", label="Spesa post [€/anno]")
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=8)
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(["Ante", "Post"], fontsize=10)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"€ {v:,.0f}"))
     ax.set_ylabel("Spesa [€/anno]")
     ax.set_title("Confronto spesa energetica ante/post relamping")
@@ -57,18 +50,19 @@ def grafico_flussi_cassa(
     fc_att_senza: List[float],
     fc_sempl_con: List[float],
     fc_sempl_senza: List[float],
+    investimento: float = 0.0,
 ) -> io.BytesIO:
     """
     Grafico lineare dei 4 scenari di flusso di cassa cumulato.
     Blu = attualizzati, Rosso = semplici.
     Solido = con incentivi, Tratteggiato = senza incentivi.
-    Le liste in ingresso hanno 8 valori (anni 1-8); viene preposto l'anno 0 = 0.
+    Le liste in ingresso hanno 8 valori (anni 1-8); viene preposto l'anno 0 = -investimento.
     """
     anni = len(fc_att_con)
     x_vals = list(range(0, anni + 1))
 
     def prepend_zero(lst: List[float]) -> List[float]:
-        return [0.0] + list(lst)
+        return [-investimento] + list(lst)
 
     fig, ax = plt.subplots(figsize=(9, 5))
 

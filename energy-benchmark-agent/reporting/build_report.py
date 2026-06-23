@@ -122,17 +122,16 @@ def _header_row(table, labels: List[str], font_size: int = 9) -> None:
 def _tabella_valutazione_relamping(doc: Document, result: RelampingResult) -> None:
     doc.add_heading("Valutazione relamping", level=2)
 
-    # Raggruppa per (zona, tipologia_originale)
-    # Struttura: {zona: {tipologia: [RelampingRiga]}}
-    gruppi: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    # Aggrega tutte le righe per tipologia (ignora l'edificio)
+    per_tipo: dict[str, list] = defaultdict(list)
     for r in result.righe:
-        gruppi[r.zona][r.tipologia_originale].append(r)
+        per_tipo[r.tipologia_originale].append(r)
 
-    # Colonne: Fabbricato | Tipo di lampada | Caratterizzazione | Ex-ante | Ex-post | N. lampade
-    cols = ["Fabbricato", "Tipo di lampada", "Caratterizzazione", "Ex-ante", "Ex-post", "N. lampade"]
+    # Colonne: Tipo di lampada | Caratterizzazione | Ex-ante | Ex-post | N. lampade
+    cols = ["Tipo di lampada", "Caratterizzazione", "Ex-ante", "Ex-post", "N. lampade"]
 
-    # Conta il numero totale di righe di dati (2 per tipologia: kW + kWh)
-    n_data_rows = sum(len(tipologie) * 2 for tipologie in gruppi.values())
+    tipo_list = sorted(per_tipo.keys())
+    n_data_rows = len(tipo_list) * 2  # 2 righe per tipologia: kW + kWh
     table = doc.add_table(rows=1 + n_data_rows, cols=len(cols))
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -140,91 +139,41 @@ def _tabella_valutazione_relamping(doc: Document, result: RelampingResult) -> No
     _header_row(table, cols)
 
     row_idx = 1
-    zona_list = sorted(gruppi.keys())
-    for zi, zona in enumerate(zona_list):
-        tipologie_dict = gruppi[zona]
-        tipo_list = sorted(tipologie_dict.keys())
-        n_tipi = len(tipo_list)
-        zona_bg = _VERDE_CHIARO if zi % 2 == 0 else _BIANCO
+    for ti, tipo in enumerate(tipo_list):
+        righe_tipo = per_tipo[tipo]
+        bg = _VERDE_CHIARO if ti % 2 == 0 else _BIANCO
 
-        # Celle "Fabbricato" — unione verticale su n_tipi*2 righe
-        fabbricato_start = row_idx
-        for tipo in tipo_list:
-            righe_tipo = tipologie_dict[tipo]
-            r = righe_tipo[0]  # aggregato: somma n_utenze, somma potenze
+        n_tot      = sum(x.n_utenze for x in righe_tipo)
+        p_ante_tot = sum(x.p_tot_ante_kw for x in righe_tipo)
+        p_post_tot = sum(x.p_tot_post_kw for x in righe_tipo)
+        c_ante_tot = sum(x.consumo_ante_kwh for x in righe_tipo)
+        c_post_tot = sum(x.consumo_post_kwh for x in righe_tipo)
 
-            n_tot = sum(x.n_utenze for x in righe_tipo)
-            p_ante_tot = sum(x.p_tot_ante_kw for x in righe_tipo)
-            p_post_tot = sum(x.p_tot_post_kw for x in righe_tipo)
-            c_ante_tot = sum(x.consumo_ante_kwh for x in righe_tipo)
-            c_post_tot = sum(x.consumo_post_kwh for x in righe_tipo)
+        # riga kW
+        row_kw = table.rows[row_idx]
+        for c in row_kw.cells:
+            _set_cell_bg(c, bg)
+        _cell_text(row_kw.cells[0], tipo, bold=False, size=8)
+        _cell_text(row_kw.cells[1], "Potenza [kW]", bold=False, size=8, center=True)
+        _cell_text(row_kw.cells[2], _fmt(p_ante_tot, 3), size=8, center=True)
+        _cell_text(row_kw.cells[3], _fmt(p_post_tot, 3), size=8, center=True)
+        _cell_text(row_kw.cells[4], str(n_tot), size=8, center=True)
 
-            # riga kW
-            row_kw = table.rows[row_idx]
-            _set_cell_bg(row_kw.cells[0], zona_bg)
-            _set_cell_bg(row_kw.cells[1], zona_bg)
-            _set_cell_bg(row_kw.cells[2], zona_bg)
-            _set_cell_bg(row_kw.cells[3], zona_bg)
-            _set_cell_bg(row_kw.cells[4], zona_bg)
-            _set_cell_bg(row_kw.cells[5], zona_bg)
+        # riga kWh
+        row_kwh = table.rows[row_idx + 1]
+        for c in row_kwh.cells:
+            _set_cell_bg(c, bg)
+        _cell_text(row_kwh.cells[0], tipo, bold=False, size=8)
+        _cell_text(row_kwh.cells[1], "Consumi [kWh]", bold=False, size=8, center=True)
+        _cell_text(row_kwh.cells[2], _fmt(c_ante_tot, 0), size=8, center=True)
+        _cell_text(row_kwh.cells[3], _fmt(c_post_tot, 0), size=8, center=True)
+        _cell_text(row_kwh.cells[4], str(n_tot), size=8, center=True)
 
-            # col 0: Fabbricato (verrà unita dopo)
-            _cell_text(row_kw.cells[0], zona, bold=True, size=9, center=True)
-            # col 1: Tipo lampada (unione verticale kW+kWh)
-            _cell_text(row_kw.cells[1], tipo, bold=False, size=8)
-            # col 2: Caratterizzazione
-            _cell_text(row_kw.cells[2], "Potenza [kW]", bold=False, size=8, center=True)
-            # col 3: Ex-ante
-            _cell_text(row_kw.cells[3], _fmt(p_ante_tot, 3), size=8, center=True)
-            # col 4: Ex-post
-            _cell_text(row_kw.cells[4], _fmt(p_post_tot, 3), size=8, center=True)
-            # col 5: N. lampade
-            _cell_text(row_kw.cells[5], str(n_tot), size=8, center=True)
+        # Unione verticale col 0 (tipo) e col 4 (n_lampade) sulle 2 righe
+        _merge_v(row_kw.cells[0], row_kwh.cells[0])
+        _merge_v(row_kw.cells[4], row_kwh.cells[4])
 
-            # riga kWh
-            row_kwh = table.rows[row_idx + 1]
-            _set_cell_bg(row_kwh.cells[0], zona_bg)
-            _set_cell_bg(row_kwh.cells[1], zona_bg)
-            _set_cell_bg(row_kwh.cells[2], zona_bg)
-            _set_cell_bg(row_kwh.cells[3], zona_bg)
-            _set_cell_bg(row_kwh.cells[4], zona_bg)
-            _set_cell_bg(row_kwh.cells[5], zona_bg)
-
-            _cell_text(row_kwh.cells[1], tipo, bold=False, size=8)
-            _cell_text(row_kwh.cells[2], "Consumi [kWh]", bold=False, size=8, center=True)
-            _cell_text(row_kwh.cells[3], _fmt(c_ante_tot, 0), size=8, center=True)
-            _cell_text(row_kwh.cells[4], _fmt(c_post_tot, 0), size=8, center=True)
-            _cell_text(row_kwh.cells[5], str(n_tot), size=8, center=True)
-
-            # Unione verticale col 1 (tipo) sulle 2 righe
-            _merge_v(row_kw.cells[1], row_kwh.cells[1])
-            # Unione verticale col 5 (n_lampade) sulle 2 righe
-            _merge_v(row_kw.cells[5], row_kwh.cells[5])
-
-            row_idx += 2
-
-        # Unione verticale col 0 (fabbricato) su tutte le righe della zona
-        base_cell = table.rows[fabbricato_start].cells[0]
-        for ri in range(fabbricato_start + 1, row_idx):
-            _merge_v(table.rows[fabbricato_start].cells[0],
-                     table.rows[ri].cells[0])
-            break  # vMerge: basta impostare restart + continuation
-        # Redo properly: restart on first, continuation on all others
-        tc0 = table.rows[fabbricato_start].cells[0]._tc
-        tcPr0 = tc0.get_or_add_tcPr()
-        # remove any existing vMerge
-        for vm in tcPr0.findall(qn("w:vMerge")):
-            tcPr0.remove(vm)
-        vMerge_start = OxmlElement("w:vMerge")
-        vMerge_start.set(qn("w:val"), "restart")
-        tcPr0.append(vMerge_start)
-        for ri in range(fabbricato_start + 1, row_idx):
-            tc = table.rows[ri].cells[0]._tc
-            tcPr = tc.get_or_add_tcPr()
-            for vm in tcPr.findall(qn("w:vMerge")):
-                tcPr.remove(vm)
-            vMerge_cont = OxmlElement("w:vMerge")
-            tcPr.append(vMerge_cont)
+        row_idx += 2
 
 
 # ─── Tabella 2 — Valutazione energetica e economica ──────────────────────────
@@ -323,32 +272,35 @@ def _tabella_investimento(doc: Document, result: RelampingResult) -> None:
     doc.add_heading("Piano degli investimenti", level=2)
 
     importo_totale = result.costo_stimato_euro
-    # Ripartizione standard: 60% corpi, 25% montaggi, 15% progettazione
-    corpi     = importo_totale * 0.60
-    montaggi  = importo_totale * 0.25
-    prog      = importo_totale * 0.15
+    n_lampade = sum(r.n_utenze for r in result.righe)
+    # Ripartizione standard: 60% corpi, 25% montaggi, 15% sostituzione
+    corpi    = importo_totale * 0.60
+    montaggi = importo_totale * 0.25
+    sost     = importo_totale * 0.15
 
+    # (voce, importo, n_lampade o None)
     voci = [
-        ("Importo totale investimento", importo_totale),
-        ("Progettazione",               prog),
-        ("Nuovi corpi illuminanti",     corpi),
-        ("Montaggi e sostituzioni",     montaggi),
+        ("Importo totale investimento", importo_totale, None),
+        ("Sostituzione 1-1",            sost,           None),
+        ("Nuovi corpi illuminanti",     corpi,          n_lampade),
+        ("Montaggi e sostituzioni",     montaggi,       n_lampade),
     ]
 
-    table = doc.add_table(rows=1 + len(voci), cols=2)
+    table = doc.add_table(rows=1 + len(voci), cols=3)
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    _header_row(table, ["Voce di costo", "Importo [€]"])
+    _header_row(table, ["Voce di costo", "N. lampade", "Importo [€]"])
 
-    for i, (voce, importo) in enumerate(voci):
+    for i, (voce, importo, n_lamp) in enumerate(voci):
         bg = _VERDE_CHIARO if i % 2 == 0 else _BIANCO
         row = table.rows[i + 1]
-        _set_cell_bg(row.cells[0], bg)
-        _set_cell_bg(row.cells[1], bg)
+        for c in row.cells:
+            _set_cell_bg(c, bg)
         bold_flag = (voce == "Importo totale investimento")
         _cell_text(row.cells[0], voce, bold=bold_flag, size=9)
-        _cell_text(row.cells[1], _fmt(importo, 2, "€ "), bold=bold_flag, size=9, center=True)
+        _cell_text(row.cells[1], str(n_lamp) if n_lamp is not None else "", size=9, center=True)
+        _cell_text(row.cells[2], _fmt(importo, 2, "€ "), bold=bold_flag, size=9, center=True)
 
 
 # ─── Tabelle benchmark VAN ───────────────────────────────────────────────────
@@ -359,8 +311,6 @@ def _tabella_benchmark(doc: Document, result: RelampingResult) -> None:
     cb = result.cb
     van_ai = result.van_attualizzato_con_incentivi
     van_as = result.van_attualizzato_senza_incentivi
-    van_si = result.van_semplice_con_incentivi
-    van_ss = result.van_semplice_senza_incentivi
 
     # ── Dati in ingresso ──
     doc.add_heading("Dati in ingresso", level=3)
@@ -387,8 +337,7 @@ def _tabella_benchmark(doc: Document, result: RelampingResult) -> None:
         _cell_text(row.cells[1], val, size=9, center=True)
 
     # ── helper per tabella risultati ──
-    indicatori_cols = ["Indicatore", "Att. con incentivi", "Att. senza incentivi",
-                       "Sempl. con incentivi", "Sempl. senza incentivi"]
+    indicatori_cols = ["Indicatore", "Att. con incentivi", "Att. senza incentivi"]
 
     def _fmt_opt(v, decimali=2, suffix=""):
         if v is None:
@@ -400,32 +349,22 @@ def _tabella_benchmark(doc: Document, result: RelampingResult) -> None:
     indicatori = [
         ("VAN [€]",
          _fmt(van_ai.van, 2, "€ "),
-         _fmt(van_as.van, 2, "€ "),
-         _fmt(van_si.van, 2, "€ "),
-         _fmt(van_ss.van, 2, "€ ")),
+         _fmt(van_as.van, 2, "€ ")),
         ("TR semplice [anni]",
          _fmt(van_ai.tr, 1),
-         _fmt(van_as.tr, 1),
-         _fmt(van_si.tr, 1),
-         _fmt(van_ss.tr, 1)),
+         _fmt(van_as.tr, 1)),
         ("DPP [anni]",
          _fmt_opt(van_ai.dpp, 1),
-         _fmt_opt(van_as.dpp, 1),
-         _fmt_opt(van_si.dpp, 1),
-         _fmt_opt(van_ss.dpp, 1)),
+         _fmt_opt(van_as.dpp, 1)),
         ("TIR [%]",
          _fmt_opt(van_ai.tir, 1, "%"),
-         _fmt_opt(van_as.tir, 1, "%"),
-         "n.a.",
-         "n.a."),
+         _fmt_opt(van_as.tir, 1, "%")),
         ("Indice di profitto",
          _fmt(van_ai.indice_profitto, 3),
-         _fmt(van_as.indice_profitto, 3),
-         _fmt(van_si.indice_profitto, 3),
-         _fmt(van_ss.indice_profitto, 3)),
+         _fmt(van_as.indice_profitto, 3)),
     ]
 
-    t_res = doc.add_table(rows=1 + len(indicatori), cols=5)
+    t_res = doc.add_table(rows=1 + len(indicatori), cols=3)
     t_res.style = "Table Grid"
     t_res.alignment = WD_TABLE_ALIGNMENT.CENTER
     _header_row(t_res, indicatori_cols, font_size=8)
@@ -505,22 +444,9 @@ def _sezione_relamping(doc: Document, result: RelampingResult) -> None:
 
     # ── 4. Grafico spesa ante/post ──
     doc.add_heading("Confronto spesa energetica", level=2)
-    labels: list[str] = []
-    spese_ante: list[float] = []
-    spese_post: list[float] = []
-
-    gruppi: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
-    for r in result.righe:
-        gruppi[r.zona][r.tipologia_originale].append(r)
-
-    for zona in sorted(gruppi.keys()):
-        for tipo in sorted(gruppi[zona].keys()):
-            righe_tipo = gruppi[zona][tipo]
-            labels.append(f"{zona}\n{tipo[:20]}")
-            spese_ante.append(sum(x.spesa_ante_euro for x in righe_tipo))
-            spese_post.append(sum(x.spesa_post_euro for x in righe_tipo))
-
-    buf_spesa = grafico_spesa_ante_post(labels, spese_ante, spese_post)
+    totale_ante = sum(r.spesa_ante_euro for r in result.righe)
+    totale_post = sum(r.spesa_post_euro for r in result.righe)
+    buf_spesa = grafico_spesa_ante_post(totale_ante, totale_post)
     doc.add_picture(buf_spesa, width=Cm(14))
     doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -557,6 +483,7 @@ def _sezione_relamping(doc: Document, result: RelampingResult) -> None:
         fc_att_senza=result.van_attualizzato_senza_incentivi.flussi_cassa,
         fc_sempl_con=result.van_semplice_con_incentivi.flussi_cassa,
         fc_sempl_senza=result.van_semplice_senza_incentivi.flussi_cassa,
+        investimento=result.van_attualizzato_con_incentivi.investimento,
     )
     doc.add_picture(buf_fc, width=Cm(14))
     doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
