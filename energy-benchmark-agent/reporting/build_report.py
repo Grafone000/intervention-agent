@@ -370,7 +370,7 @@ def _tabella_benchmark(doc: Document, result: RelampingResult) -> None:
         ("Risparmio annuo [€/anno]",      _fmt(van_ai.risparmio_annuo_euro, 2, "€ ")),
         ("Durata analisi [anni]",         "8"),
         ("Tasso di attualizzazione",      f"{van_ai.discount_rate * 100:.0f}%"),
-        ("Certificati Bianchi [tep/anno]", str(cb.tep_floor)),
+        ("Certificati Bianchi [tep/anno]", str(cb.tep_arrotondati)),
         ("Incentivo annuo CB [€/anno]",   _fmt(cb.incentivo_annuo, 2, "€ ")),
         ("Durata incentivi [anni]",       "5"),
     ]
@@ -539,7 +539,7 @@ def _sezione_relamping(doc: Document, result: RelampingResult) -> None:
     )
     cb_para.add_run(f"{cb.tep_risparmiati:.3f} tep/anno").bold = True
     cb_para.add_run(", corrispondente a ")
-    cb_para.add_run(f"{cb.tep_floor} tep/anno").bold = True
+    cb_para.add_run(f"{cb.tep_arrotondati} tep/anno").bold = True
     cb_para.add_run(
         " (arrotondati per difetto come da normativa). "
         "Considerando un valore di mercato pari a 250 €/tep, l'incentivo annuo stimato è di "

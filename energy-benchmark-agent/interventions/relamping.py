@@ -12,7 +12,6 @@ Struttura output:
 """
 
 from __future__ import annotations
-import math
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -72,8 +71,8 @@ class CBCalcolo(BaseModel):
     p_tot_post_kw: float = Field(description="Somma P tot post")
     h_post: float = Field(description="Ore funzionamento post = E_post / P_tot_post")
     tep_risparmiati: float = Field(description="(P_ant×h_post − E_post) × 0.000187")
-    tep_floor: int = Field(description="tep_risparmiati approssimati per difetto")
-    incentivo_annuo: float = Field(description="tep_floor × 250 €/tep")
+    tep_arrotondati: int = Field(description="ROUND(tep_risparmiati, 0) — come da foglio CB dell'Excel di riferimento")
+    incentivo_annuo: float = Field(description="tep_arrotondati × 250 €/tep")
 
 
 class VanScenario(BaseModel):
@@ -302,8 +301,9 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> RelampingResult:
     # --- CB (Certificati Bianchi) ---
     h_post = e_post_totale / p_tot_post_totale if p_tot_post_totale > 0 else 0.0
     tep_risparmiati = (p_tot_ante_totale * h_post - e_post_totale) * _FATTORE_TEP
-    tep_floor = math.floor(tep_risparmiati)
-    incentivo_annuo = tep_floor * valore_cb
+    # Come nel foglio "CB" dell'Excel di riferimento: E7 = ROUND(D7,0)
+    tep_arrotondati = round(tep_risparmiati)
+    incentivo_annuo = tep_arrotondati * valore_cb
 
     cb = CBCalcolo(
         p_tot_ante_kw=round(p_tot_ante_totale, 4),
@@ -311,7 +311,7 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> RelampingResult:
         p_tot_post_kw=round(p_tot_post_totale, 4),
         h_post=round(h_post, 2),
         tep_risparmiati=round(tep_risparmiati, 6),
-        tep_floor=tep_floor,
+        tep_arrotondati=tep_arrotondati,
         incentivo_annuo=round(incentivo_annuo, 2),
     )
 

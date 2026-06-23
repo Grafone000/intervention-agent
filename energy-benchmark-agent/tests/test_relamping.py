@@ -4,7 +4,6 @@ Usa il file reale: Modello_energetico_Salerno_rev0.xlsx
 """
 
 import pytest
-import math
 import sys
 from pathlib import Path
 
@@ -104,15 +103,15 @@ def test_cb_h_post(result):
     atteso = cb.e_post_kwh / cb.p_tot_post_kw
     assert abs(cb.h_post - atteso) < 0.01
 
-def test_cb_tep_floor(result):
-    """tep_floor deve essere floor(tep_risparmiati)."""
+def test_cb_tep_arrotondati(result):
+    """tep_arrotondati deve essere round(tep_risparmiati) — come ROUND(D7,0) nell'Excel."""
     cb = result.cb
-    assert cb.tep_floor == math.floor(cb.tep_risparmiati)
+    assert cb.tep_arrotondati == round(cb.tep_risparmiati)
 
 def test_cb_incentivo_annuo(result):
-    """incentivo_annuo = tep_floor × 250."""
+    """incentivo_annuo = tep_arrotondati × 250."""
     cb = result.cb
-    assert abs(cb.incentivo_annuo - cb.tep_floor * 250.0) < 0.01
+    assert abs(cb.incentivo_annuo - cb.tep_arrotondati * 250.0) < 0.01
 
 
 # --- VAN e indicatori economici ---
