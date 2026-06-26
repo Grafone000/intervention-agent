@@ -224,7 +224,8 @@ def test_calcola_quota_autoconsumo_range(mock_pvgis, consumi_file):
     assert 0.0 <= result.quota_autoconsumo <= 1.0
 
 
-def test_calcola_van_con_incentivi_maggiore(mock_pvgis, consumi_file):
+def test_calcola_van_attualizzato_minore_semplice(mock_pvgis, consumi_file):
+    """Senza incentivi, il VAN attualizzato (sconto 6%) è ≤ del VAN semplice (sconto 0%)."""
     from core.energy_model import EnergyModel
     model = EnergyModel(nome_progetto="test", utenze=[])
     params = {
@@ -233,10 +234,10 @@ def test_calcola_van_con_incentivi_maggiore(mock_pvgis, consumi_file):
         "percorso_consumi": consumi_file,
     }
     result = calcola(model, params)
-    assert result.van_attualizzato_con_incentivi.van >= result.van_attualizzato_senza_incentivi.van
+    assert result.van_attualizzato.van <= result.van_semplice.van
 
 
-def test_calcola_tir_solo_attualizzati(mock_pvgis, consumi_file):
+def test_calcola_tir_solo_attualizzato(mock_pvgis, consumi_file):
     from core.energy_model import EnergyModel
     model = EnergyModel(nome_progetto="test", utenze=[])
     params = {
@@ -245,5 +246,5 @@ def test_calcola_tir_solo_attualizzati(mock_pvgis, consumi_file):
         "percorso_consumi": consumi_file,
     }
     result = calcola(model, params)
-    assert result.van_semplice_con_incentivi.tir is None
-    assert result.van_semplice_senza_incentivi.tir is None
+    assert result.van_semplice.tir is None
+    assert result.van_attualizzato.tir is not None

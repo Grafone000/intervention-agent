@@ -24,8 +24,7 @@ from core.energy_model import EnergyModel
 from core.consumi_parser import parse_consumi_quart_orari, parse_consumi_excel_multi_pod
 from interventions.base import InterventionResult
 from interventions.economics import (
-    CBCalcolo, VanScenario, calcola_cb, calcola_van_scenario,
-    _FATTORE_TEP, _DISCOUNT_RATE, _DURATA_INCENTIVI_ANNI,
+    VanScenario, calcola_van_scenario, _DISCOUNT_RATE,
 )
 from interventions.fotovoltaico_pvgis import get_producibilita_oraria
 from interventions.fotovoltaico_prezzi import costo_impianto
@@ -97,14 +96,9 @@ class FVResult(InterventionResult):
     risparmio_totale_euro: float
     co2_evitata_kg: float
 
-    # Certificati Bianchi
-    cb: CBCalcolo
-
-    # Benchmark VAN
-    van_attualizzato_con_incentivi: VanScenario
-    van_attualizzato_senza_incentivi: VanScenario
-    van_semplice_con_incentivi: VanScenario
-    van_semplice_senza_incentivi: VanScenario
+    # Benchmark VAN (il FV non usa incentivi né Certificati Bianchi)
+    van_attualizzato: VanScenario
+    van_semplice: VanScenario
 
     # Parametri usati
     prezzo_kwh: float
@@ -255,7 +249,6 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     loss = float(parametri.get("loss", 14.0))
     prezzo_kwh = float(parametri.get("prezzo_kwh", _PREZZO_KWH_DEFAULT))
     pun = float(parametri.get("pun_euro_kwh", _PUN_DEFAULT))
-    valore_cb = float(parametri.get("valore_cb", 250.0))
 
     # --- Superfici ---
     if "superfici" in parametri:
@@ -341,26 +334,20 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     costo_totale = costo_impianto(potenza_totale, model.regione)
     costo_unitario = costo_totale / potenza_totale if potenza_totale > 0 else 0.0
 
-    # --- Certificati Bianchi ---
-    tep_risparmiati = e_prodotta * _FATTORE_TEP
-    cb = calcola_cb(tep_risparmiati, valore_cb)
-
-    # --- 4 scenari VAN ---
+    # --- 2 scenari VAN (il FV non usa incentivi né Certificati Bianchi) ---
     scenari_config = [
-        ("VAN Attualizzato con incentivi",   _DISCOUNT_RATE, True),
-        ("VAN Attualizzato senza incentivi", _DISCOUNT_RATE, False),
-        ("VAN Semplice con incentivi",       0.0,            True),
-        ("VAN Semplice senza incentivi",     0.0,            False),
+        ("VAN Attualizzato", _DISCOUNT_RATE),
+        ("VAN Semplice",     0.0),
     ]
     van_results: list[VanScenario] = []
-    for nome, dr, inc in scenari_config:
+    for nome, dr in scenari_config:
         van_results.append(calcola_van_scenario(
             investimento=costo_totale,
             risparmio_annuo_euro=risp_totale,
             risparmio_annuo_ee_kwh=e_auto,
-            incentivo_annuo=cb.incentivo_annuo,
+            incentivo_annuo=0.0,
             discount_rate=dr,
-            include_incentivi=inc,
+            include_incentivi=False,
             nome=nome,
         ))
 
@@ -368,7 +355,7 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
         nome_intervento=NOME_INTERVENTO,
         risparmio_annuo_kwh=round(e_auto, 1),
         costo_stimato_euro=round(costo_totale, 2),
-        payback_anni=round(van_results[1].tr, 2),
+        payback_anni=round(van_results[0].tr, 2),
         dati_grafico={
             "e_prodotta_kwh": e_prodotta,
             "e_autoconsumata_kwh": e_auto,
@@ -377,8 +364,8 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
             "risparmio_totale_euro": risp_totale,
             "co2_evitata_kg": co2_evitata,
             "investimento": costo_totale,
-            "van_con_incentivi": van_results[0].van,
-            "van_senza_incentivi": van_results[1].van,
+            "van_attualizzato": van_results[0].van,
+            "van_semplice": van_results[1].van,
         },
         note=[],
         superfici_input=superfici,
@@ -395,11 +382,8 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
         ricavo_immissione_euro=round(ricavo_imm, 2),
         risparmio_totale_euro=round(risp_totale, 2),
         co2_evitata_kg=round(co2_evitata, 1),
-        cb=cb,
-        van_attualizzato_con_incentivi=van_results[0],
-        van_attualizzato_senza_incentivi=van_results[1],
-        van_semplice_con_incentivi=van_results[2],
-        van_semplice_senza_incentivi=van_results[3],
+        van_attualizzato=van_results[0],
+        van_semplice=van_results[1],
         prezzo_kwh=prezzo_kwh,
         pun_euro_kwh=pun,
         anno_pvgis=anno,
