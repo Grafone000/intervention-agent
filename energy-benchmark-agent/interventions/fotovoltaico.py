@@ -11,8 +11,16 @@ Input richiesti (in parametri):
     anno_pvgis (int)         : anno simulazione PVGIS, default 2023
     loss (float)             : perdite sistema [%], default 14.0
     prezzo_kwh (float)       : prezzo acquisto energia [€/kWh], default 0.21
-    pun_euro_kwh (float)     : prezzo cessione in rete [€/kWh], default 0.12
-    valore_cb (float)        : valore CB [€/tep], default 250.0
+    pun_euro_kwh (float)     : prezzo cessione in rete (PUN) [€/kWh], default 0.12
+    pod_selezionati (list)   : codici POD per cui dimensionare l'autoconsumo (None = tutti)
+    fabbricati (list[str])   : fabbricati sotto il POD (descrittivo, per il report)
+    edifici (list[str])      : edifici considerati per le superfici (descrittivo, per il report)
+
+Modello economico:
+    investimento = costo_impianto + 15% progettazione
+    manutenzione annua = 1% di (costo_impianto + progettazione)
+    flusso netto annuo = autoconsumo·prezzo + immissione·PUN − manutenzione
+    vita utile = 20 anni, tasso di sconto = 6%
 """
 
 from __future__ import annotations
@@ -33,7 +41,11 @@ NOME_INTERVENTO = "fotovoltaico"
 
 _PREZZO_KWH_DEFAULT = 0.21
 _PUN_DEFAULT = 0.12
-_FATTORE_CO2 = 294.784 / 1000   # kg/kWh
+_FATTORE_CO2 = 294.784 / 1000     # kg/kWh
+_FATTORE_TEP = 0.000187           # tep/kWh
+_QUOTA_PROGETTAZIONE = 0.15       # 15% del costo impianto
+_QUOTA_MANUTENZIONE = 0.01        # 1% annuo di (impianto + progettazione)
+_VITA_UTILE_ANNI = 20
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +92,13 @@ class FVResult(InterventionResult):
     potenza_totale_kwp: float
     costo_per_kwp: float
 
+    # Investimento (impianto + progettazione)
+    costo_impianto_euro: float
+    progettazione_euro: float
+    investimento_totale_euro: float
+    manutenzione_annua_euro: float
+    vita_utile_anni: int
+
     # Producibilità
     e_prodotta_kwh: float
     ore_equivalenti_impianto: float
@@ -90,15 +109,29 @@ class FVResult(InterventionResult):
     e_prelevata_kwh: float
     quota_autoconsumo: float
 
+    # Consumo del/i POD selezionato/i
+    consumo_pod_kwh: float
+    pod_selezionati: List[str]
+
     # Economico annuo
     risparmio_acquisto_euro: float
     ricavo_immissione_euro: float
-    risparmio_totale_euro: float
+    risparmio_lordo_euro: float          # acquisto + immissione (prima della manutenzione)
+    risparmio_totale_euro: float         # netto = lordo - manutenzione
     co2_evitata_kg: float
+    tep_risparmiati: float
 
     # Benchmark VAN (il FV non usa incentivi né Certificati Bianchi)
     van_attualizzato: VanScenario
     van_semplice: VanScenario
+
+    # Serie orarie (8760) per i grafici del report
+    produzione_oraria: List[float] = Field(default_factory=list)
+    consumo_orario: List[float] = Field(default_factory=list)
+
+    # Metadati report (descrittivi)
+    fabbricati: List[str] = Field(default_factory=list)
+    edifici: List[str] = Field(default_factory=list)
 
     # Parametri usati
     prezzo_kwh: float
@@ -236,8 +269,8 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
             anno_pvgis (int)            : anno simulazione PVGIS (default 2023)
             loss (float)                : perdite sistema % (default 14.0)
             prezzo_kwh (float)          : prezzo acquisto ee (default 0.21)
-            pun_euro_kwh (float)        : prezzo cessione in rete (default 0.12)
-            valore_cb (float)           : valore CB €/tep (default 250.0)
+            pun_euro_kwh (float)        : prezzo cessione in rete - PUN (default 0.12)
+            pod_selezionati (list[str]) : POD da considerare per l'autoconsumo (default tutti)
 
     Returns:
         FVResult con tutti i calcoli energetici ed economici
@@ -249,6 +282,14 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     loss = float(parametri.get("loss", 14.0))
     prezzo_kwh = float(parametri.get("prezzo_kwh", _PREZZO_KWH_DEFAULT))
     pun = float(parametri.get("pun_euro_kwh", _PUN_DEFAULT))
+
+    # POD selezionati per l'intervento (None/[] = tutti)
+    pod_sel_raw = parametri.get("pod_selezionati") or []
+    pod_selezionati = [str(p).strip() for p in pod_sel_raw if str(p).strip()]
+
+    # Metadati descrittivi per il report (opzionali)
+    fabbricati = [str(x) for x in (parametri.get("fabbricati") or [])]
+    edifici = [str(x) for x in (parametri.get("edifici") or [])]
 
     # --- Superfici ---
     if "superfici" in parametri:
@@ -274,7 +315,8 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
             if foglio_multi in wb_check.sheetnames:
                 col_prima_pod = int(parametri.get("col_prima_pod", 130))
                 consumo_orario = parse_consumi_excel_multi_pod(
-                    percorso_consumi, nome_foglio=foglio_multi, col_prima_pod=col_prima_pod
+                    percorso_consumi, nome_foglio=foglio_multi, col_prima_pod=col_prima_pod,
+                    pod_selezionati=pod_selezionati or None,
                 )
             else:
                 consumo_orario = parse_consumi_quart_orari(percorso_consumi)
@@ -323,18 +365,27 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     # --- Autoconsumo ---
     e_auto, e_imm, e_prel = _calcola_autoconsumo(produzione_totale, consumo_orario)
     quota_auto = e_auto / e_prodotta if e_prodotta > 0 else 0.0
+    consumo_pod = sum(consumo_orario)
+
+    # --- Investimento: impianto + progettazione (15% del costo impianto) ---
+    costo_imp = costo_impianto(potenza_totale, model.regione)
+    progettazione = costo_imp * _QUOTA_PROGETTAZIONE
+    investimento_totale = costo_imp + progettazione
+    costo_unitario = costo_imp / potenza_totale if potenza_totale > 0 else 0.0
+
+    # --- Manutenzione annua: 1% di (impianto + progettazione) ---
+    manutenzione_annua = investimento_totale * _QUOTA_MANUTENZIONE
 
     # --- Economico annuo ---
-    risp_acquisto = e_auto * prezzo_kwh
-    ricavo_imm = e_imm * pun
-    risp_totale = risp_acquisto + ricavo_imm
-    co2_evitata = e_prodotta * _FATTORE_CO2
+    risp_acquisto = e_auto * prezzo_kwh          # mancato acquisto da rete
+    ricavo_imm = e_imm * pun                      # ritiro dedicato (PUN)
+    risp_lordo = risp_acquisto + ricavo_imm
+    risp_netto = risp_lordo - manutenzione_annua  # flusso di cassa annuo netto
+    # CO2/TEP riferiti al mancato prelievo da rete (autoconsumo), come da tabella PRE/POST del POD
+    co2_evitata = e_auto * _FATTORE_CO2
+    tep_risparmiati = e_auto * _FATTORE_TEP
 
-    # --- Investimento ---
-    costo_totale = costo_impianto(potenza_totale, model.regione)
-    costo_unitario = costo_totale / potenza_totale if potenza_totale > 0 else 0.0
-
-    # --- 2 scenari VAN (il FV non usa incentivi né Certificati Bianchi) ---
+    # --- 2 scenari VAN su vita utile 20 anni (FV: nessun incentivo né CB) ---
     scenari_config = [
         ("VAN Attualizzato", _DISCOUNT_RATE),
         ("VAN Semplice",     0.0),
@@ -342,28 +393,29 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     van_results: list[VanScenario] = []
     for nome, dr in scenari_config:
         van_results.append(calcola_van_scenario(
-            investimento=costo_totale,
-            risparmio_annuo_euro=risp_totale,
+            investimento=investimento_totale,
+            risparmio_annuo_euro=risp_netto,
             risparmio_annuo_ee_kwh=e_auto,
             incentivo_annuo=0.0,
             discount_rate=dr,
             include_incentivi=False,
             nome=nome,
+            vita_anni=_VITA_UTILE_ANNI,
         ))
 
     return FVResult(
         nome_intervento=NOME_INTERVENTO,
         risparmio_annuo_kwh=round(e_auto, 1),
-        costo_stimato_euro=round(costo_totale, 2),
+        costo_stimato_euro=round(investimento_totale, 2),
         payback_anni=round(van_results[0].tr, 2),
         dati_grafico={
             "e_prodotta_kwh": e_prodotta,
             "e_autoconsumata_kwh": e_auto,
             "e_immessa_kwh": e_imm,
             "quota_autoconsumo": quota_auto,
-            "risparmio_totale_euro": risp_totale,
+            "risparmio_totale_euro": risp_netto,
             "co2_evitata_kg": co2_evitata,
-            "investimento": costo_totale,
+            "investimento": investimento_totale,
             "van_attualizzato": van_results[0].van,
             "van_semplice": van_results[1].van,
         },
@@ -372,18 +424,31 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
         righe=righe,
         potenza_totale_kwp=round(potenza_totale, 3),
         costo_per_kwp=round(costo_unitario, 2),
+        costo_impianto_euro=round(costo_imp, 2),
+        progettazione_euro=round(progettazione, 2),
+        investimento_totale_euro=round(investimento_totale, 2),
+        manutenzione_annua_euro=round(manutenzione_annua, 2),
+        vita_utile_anni=_VITA_UTILE_ANNI,
         e_prodotta_kwh=round(e_prodotta, 1),
         ore_equivalenti_impianto=round(ore_eq_impianto, 1),
         e_autoconsumata_kwh=round(e_auto, 1),
         e_immessa_kwh=round(e_imm, 1),
         e_prelevata_kwh=round(e_prel, 1),
         quota_autoconsumo=round(quota_auto, 4),
+        consumo_pod_kwh=round(consumo_pod, 1),
+        pod_selezionati=pod_selezionati,
         risparmio_acquisto_euro=round(risp_acquisto, 2),
         ricavo_immissione_euro=round(ricavo_imm, 2),
-        risparmio_totale_euro=round(risp_totale, 2),
+        risparmio_lordo_euro=round(risp_lordo, 2),
+        risparmio_totale_euro=round(risp_netto, 2),
         co2_evitata_kg=round(co2_evitata, 1),
+        tep_risparmiati=round(tep_risparmiati, 4),
         van_attualizzato=van_results[0],
         van_semplice=van_results[1],
+        produzione_oraria=[round(x, 4) for x in produzione_totale],
+        consumo_orario=[round(x, 4) for x in consumo_orario],
+        fabbricati=fabbricati,
+        edifici=edifici,
         prezzo_kwh=prezzo_kwh,
         pun_euro_kwh=pun,
         anno_pvgis=anno,

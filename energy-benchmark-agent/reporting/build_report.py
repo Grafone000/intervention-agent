@@ -26,7 +26,12 @@ from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
 
 from interventions.base import InterventionResult
 from interventions.relamping import RelampingResult
-from reporting.charts import grafico_spesa_ante_post, grafico_flussi_cassa
+from interventions.fotovoltaico import FVResult
+from reporting.charts import (
+    grafico_spesa_ante_post, grafico_flussi_cassa,
+    grafico_mensile_prod_vs_cons, grafico_giornata_tipica, grafico_stagionale,
+    grafico_costi_fv, grafico_flussi_cassa_fv,
+)
 
 
 # ─── colori ──────────────────────────────────────────────────────────────────
@@ -398,8 +403,12 @@ def costruisci_relazione(results: List[InterventionResult], output_path: str) ->
 
     doc.add_heading("Relazione Benchmark Energetico", level=0)
 
+    _premessa_generale(doc)
+
     for result in results:
-        if isinstance(result, RelampingResult):
+        if isinstance(result, FVResult):
+            _sezione_fotovoltaico(doc, result)
+        elif isinstance(result, RelampingResult):
             _sezione_relamping(doc, result)
         else:
             # Sezione generica per futuri interventi
@@ -416,6 +425,268 @@ def costruisci_relazione(results: List[InterventionResult], output_path: str) ->
     out.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(out))
     return str(out.resolve())
+
+
+def _premessa_generale(doc: Document) -> None:
+    """Premessa introduttiva comune agli interventi (testo fisso)."""
+    p = doc.add_paragraph()
+    p.add_run(
+        "L'analisi energetica ha messo in evidenza tre aspetti principali sui quali "
+        "focalizzarsi per l'individuazione di interventi di efficientamento energetico:"
+    )
+    for voce in (
+        "sistemi di produzione di energia da fonti rinnovabili;",
+        "sostituzione corpi illuminanti;",
+        "l'aspetto gestionale dei consumi.",
+    ):
+        doc.add_paragraph(voce, style="List Bullet")
+    doc.add_paragraph(
+        "L'installazione di sistemi di produzione di energia da fonti rinnovabili può portare "
+        "ad una riduzione rilevante dei costi associati ai consumi di energia elettrica, in quanto "
+        "diminuisce la quota di energia prelevata dalla rete. Anche la sostituzione di corpi "
+        "illuminanti obsoleti con nuovi a tecnologia LED può risultare rilevante dal punto di vista "
+        "di riduzione dei consumi. Nei paragrafi successivi si illustrano nel dettaglio gli "
+        "interventi proposti e i miglioramenti che essi potrebbero portare."
+    )
+    doc.add_paragraph(
+        "I costi relativi alla realizzazione degli interventi, riportati nei successivi paragrafi, "
+        "sono puramente indicativi sebbene in linea con i costi medi di mercato; solamente una "
+        "progettazione accurata e specifica potrà portare ad un valore puntuale dei costi."
+    )
+
+
+# ─── Sezione Fotovoltaico ─────────────────────────────────────────────────────
+
+def _tabella_kv(doc: Document, righe: List[tuple], header: tuple = ("Voce", "Valore"),
+                col2_center: bool = True) -> None:
+    """Tabella generica chiave/valore a 2 colonne con intestazione verde."""
+    table = doc.add_table(rows=1 + len(righe), cols=2)
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _header_row(table, list(header))
+    for i, (k, v) in enumerate(righe):
+        bg = _VERDE_CHIARO if i % 2 == 0 else _BIANCO
+        row = table.rows[i + 1]
+        _set_cell_bg(row.cells[0], bg)
+        _set_cell_bg(row.cells[1], bg)
+        _cell_text(row.cells[0], str(k), size=9)
+        _cell_text(row.cells[1], str(v), size=9, center=col2_center)
+
+
+def _sezione_fotovoltaico(doc: Document, result: "FVResult") -> None:
+    """Genera la sezione completa per l'intervento fotovoltaico."""
+    pod_nome = ", ".join(result.pod_selezionati) if result.pod_selezionati else "—"
+    n_pannelli_tot = sum(s.n_pannelli for s in result.superfici_input)
+    wp_set = sorted({s.potenza_pannello_wp for s in result.superfici_input})
+    wp_unit = wp_set[0] if len(wp_set) == 1 else None
+    quota_pct = result.quota_autoconsumo * 100.0
+    perc_consumo = (result.e_autoconsumata_kwh / result.consumo_pod_kwh * 100.0
+                    if result.consumo_pod_kwh > 0 else 0.0)
+    fabbricati_txt = ", ".join(result.fabbricati) if result.fabbricati else "<fabbricati>"
+    edifici_txt = ", ".join(result.edifici) if result.edifici else "<edifici>"
+
+    doc.add_heading(f"Intervento di installazione impianto fotovoltaico POD {pod_nome}", level=1)
+
+    # ── Intro ──
+    intro = doc.add_paragraph()
+    intro.add_run(
+        "Nel seguente paragrafo si presenta l'intervento di installazione di un impianto solare "
+        "fotovoltaico (FTV) per la produzione di energia elettrica da fonte rinnovabile, a servizio "
+        f"del POD {pod_nome}. È stato scelto il seguente POD in quanto è tra quelli che presentano "
+        "il profilo dei consumi maggiore. "
+        f"Sotto il seguente POD sono presenti le utenze relative al {fabbricati_txt}. "
+        "Nella presente valutazione dell'intervento, si prevede di considerare solamente gli edifici "
+        "le cui coperture permettano un'orientazione ottimale, che garantiscano una maggiore "
+        "producibilità, considerando anche eventuali ostacoli ed ombreggiamenti presenti. Nello "
+        f"specifico sono state considerate le superfici di copertura dell'edificio {edifici_txt}. "
+        "Nella seguente tabella si riportano i dati generali dell'impianto."
+    )
+
+    # ── Tabella superfici input ──
+    _tabella_superfici_fv(doc, result)
+
+    # ── Paragrafo descrittivo pannelli ──
+    wp_txt = f"{_fmt(wp_unit, 0)} Wp" if wp_unit else "tecnologia mista"
+    p = doc.add_paragraph()
+    p.add_run(
+        "Per l'installazione, sono stati scelti dei pannelli in silicio monocristallino, "
+        f"caratterizzati da una potenza di picco pari a {wp_txt}. L'impianto costituito da nr. "
+        f"{n_pannelli_tot} unità, in grado di produrre annualmente {_fmt(result.e_prodotta_kwh, 0)} "
+        f"kWh/anno; la quota destinata all'autoconsumo è pari a "
+        f"{_fmt(result.e_autoconsumata_kwh, 0)} kWh/anno, ovvero circa il "
+        f"{_fmt(perc_consumo, 1)}% dei consumi del POD."
+    )
+
+    # ── Tabella campo FV ──
+    _tabella_kv(doc, [
+        ("Potenza unitaria [Wp]", _fmt(wp_unit, 0) if wp_unit else "varie"),
+        ("Potenza installata [kWp]", _fmt(result.potenza_totale_kwp, 2)),
+        ("Producibilità [kWh/anno]", _fmt(result.e_prodotta_kwh, 0)),
+    ], header=("Pannello FV monocristallino", "Valore"))
+
+    # ── Grafico mensile ──
+    doc.add_heading("Confronto mensile produzione/consumi", level=2)
+    doc.add_paragraph(
+        f"Nel grafico sottostante si confronta la produzione dell'impianto fotovoltaico con i "
+        f"consumi mensili del POD {pod_nome}, dove si nota il sovradimensionamento dell'impianto."
+    )
+    buf = grafico_mensile_prod_vs_cons(result.produzione_oraria, result.consumo_orario)
+    doc.add_picture(buf, width=Cm(15))
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # ── Grafici giornate tipiche (22 luglio estiva, 22 gennaio invernale) ──
+    doc.add_heading("Curve di carico giornaliere tipiche", level=2)
+    buf = grafico_giornata_tipica(result.produzione_oraria, result.consumo_orario,
+                                  mese=7, giorno=22, titolo="Giornata tipica estiva — 22 luglio")
+    doc.add_picture(buf, width=Cm(15))
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    buf = grafico_giornata_tipica(result.produzione_oraria, result.consumo_orario,
+                                  mese=1, giorno=22, titolo="Giornata tipica invernale — 22 gennaio")
+    doc.add_picture(buf, width=Cm(15))
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # ── Confronto stagionale (estate giu-lug-ago, inverno dic-gen-feb) ──
+    doc.add_heading("Confronto stagionale", level=2)
+    buf = grafico_stagionale(result.produzione_oraria, result.consumo_orario,
+                             mesi=[6, 7, 8], titolo="Stagione estiva (giugno–agosto)")
+    doc.add_picture(buf, width=Cm(15))
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    buf = grafico_stagionale(result.produzione_oraria, result.consumo_orario,
+                             mesi=[12, 1, 2], titolo="Stagione invernale (dicembre–febbraio)")
+    doc.add_picture(buf, width=Cm(15))
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # ── Valutazione economica ──
+    _sezione_economica_fv(doc, result, pod_nome)
+
+
+def _tabella_superfici_fv(doc: Document, result: "FVResult") -> None:
+    cols = ["Descrizione", "Inclinazione [°]", "Azimuth [°]", "Nr. pannelli", "kWp installati"]
+    sups = result.superfici_input
+    table = doc.add_table(rows=1 + len(sups) + 1, cols=len(cols))
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _header_row(table, cols)
+
+    for i, s in enumerate(sups):
+        bg = _VERDE_CHIARO if i % 2 == 0 else _BIANCO
+        row = table.rows[i + 1]
+        for c in row.cells:
+            _set_cell_bg(c, bg)
+        _cell_text(row.cells[0], s.id, size=8)
+        _cell_text(row.cells[1], _fmt(s.slope, 0), size=8, center=True)
+        _cell_text(row.cells[2], _fmt(s.azimuth, 0), size=8, center=True)
+        _cell_text(row.cells[3], str(s.n_pannelli), size=8, center=True)
+        _cell_text(row.cells[4], _fmt(s.peak_power_kwp, 2), size=8, center=True)
+
+    # riga totale
+    tot = table.rows[-1]
+    for c in tot.cells:
+        _set_cell_bg(c, _GRIGIO_INT)
+    _cell_text(tot.cells[0], "TOTALE", bold=True, size=8, center=True)
+    _cell_text(tot.cells[1], "", size=8)
+    _cell_text(tot.cells[2], "", size=8)
+    _cell_text(tot.cells[3], str(sum(s.n_pannelli for s in sups)), bold=True, size=8, center=True)
+    _cell_text(tot.cells[4], _fmt(result.potenza_totale_kwp, 2), bold=True, size=8, center=True)
+
+
+def _sezione_economica_fv(doc: Document, result: "FVResult", pod_nome: str) -> None:
+    doc.add_heading("Valutazione economica dell'intervento", level=2)
+
+    consumo_pod = result.consumo_pod_kwh
+    e_prel = result.e_prelevata_kwh
+    fattore_co2 = 294.784 / 1000
+    emiss_pre = consumo_pod * fattore_co2
+    emiss_post = e_prel * fattore_co2
+
+    va = result.van_attualizzato
+    vs = result.van_semplice
+
+    doc.add_paragraph(
+        "Si riportano di seguito i dati relativi all'installazione dell'impianto di produzione "
+        "fotovoltaica e l'analisi economica, con il calcolo del tempo di ritorno semplice ed "
+        "attualizzato e dei principali indicatori economici. Il costo di investimento iniziale è "
+        "stato valutato secondo prezzi indicati dal prezzario regionale, per un totale di "
+        f"{_fmt(result.costo_per_kwp, 0)} €/kWp tenendo conto anche dei costi legati alla "
+        f"progettazione. Per la stima dei risparmi è stato considerato un costo medio dell'energia "
+        f"pari a {_fmt(result.prezzo_kwh, 3)} €/kWh. Si è stimato un autoconsumo del "
+        f"{_fmt(result.quota_autoconsumo * 100, 1)}%, analizzando i consumi mensili e le curve di "
+        "carico a disposizione."
+    )
+    doc.add_paragraph(
+        "I benefici annui correlati all'intervento sono dovuti sia al mancato acquisto da rete, sia "
+        "all'immissione in rete, remunerata tramite il meccanismo del Ritiro Dedicato, che valorizza "
+        "l'immissione ai prezzi minimi garantiti stabiliti da Arera o a prezzo di mercato secondo il "
+        f"PUN (Prezzo Unico Nazionale). Si prende come riferimento la media del PUN monorario "
+        f"dell'anno {result.anno_pvgis} pari a {_fmt(result.pun_euro_kwh, 3)} €/kWh."
+    )
+
+    # ── Tabella installazione (energetica + ambientale) ──
+    _tabella_kv(doc, [
+        ("Potenza installata [kWp]", _fmt(result.potenza_totale_kwp, 2)),
+        ("Producibilità specifica [kWh/kWp]", _fmt(result.ore_equivalenti_impianto, 0)),
+        ("Producibilità conseguibile [kWh/anno]", _fmt(result.e_prodotta_kwh, 0)),
+        ("Percentuale utilizzabile in autoconsumo [%]", _fmt(result.quota_autoconsumo * 100, 1)),
+        ("Energia autoconsumata [kWh/anno]", _fmt(result.e_autoconsumata_kwh, 0)),
+        ("Consumo EE PRE INTERVENTO [kWh/anno]", _fmt(consumo_pod, 0)),
+        ("Consumo EE POST INTERVENTO [kWh/anno]", _fmt(e_prel, 0)),
+        ("Mancato prelievo di EE da rete [kWh/anno]", _fmt(result.e_autoconsumata_kwh, 0)),
+        ("Mancato prelievo di EE da rete [TEP]", _fmt(result.tep_risparmiati, 3)),
+        ("Emissioni di CO₂ PRE INTERVENTO [kg/anno]", _fmt(emiss_pre, 0)),
+        ("Emissioni di CO₂ POST INTERVENTO [kg/anno]", _fmt(emiss_post, 0)),
+        ("Risparmio CO₂ conseguibile [kg/anno]", _fmt(result.co2_evitata_kg, 0)),
+    ], header=("Installazione impianto fotovoltaico", "Valore"))
+
+    # ── Grafico costi ante/post + immissione ──
+    doc.add_heading("Confronto economico ante/post intervento", level=3)
+    doc.add_paragraph(
+        "Si riporta di seguito la spesa economica ante e post intervento, considerando anche "
+        "l'immissione in rete. Si nota un buon guadagno associato all'immissione, dovuto "
+        "all'installazione di un impianto sovradimensionato rispetto alle esigenze del POD."
+    )
+    costo_ante = consumo_pod * result.prezzo_kwh
+    costo_post = e_prel * result.prezzo_kwh
+    buf = grafico_costi_fv(costo_ante, costo_post, result.ricavo_immissione_euro)
+    doc.add_picture(buf, width=Cm(12))
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    # ── Tabella investimento ──
+    doc.add_heading("Stima dell'investimento iniziale", level=3)
+    _tabella_kv(doc, [
+        ("Costo impianto", _fmt(result.costo_impianto_euro, 2, "€ ")),
+        ("Progettazione (15%)", _fmt(result.progettazione_euro, 2, "€ ")),
+        ("Investimento iniziale totale", _fmt(result.investimento_totale_euro, 2, "€ ")),
+    ], header=("Voce di costo", "Importo"))
+
+    # ── Tabella valutazione economica senza incentivi ──
+    doc.add_heading("Valutazione economica", level=3)
+
+    def _opt(v, dec=2, suf=""):
+        return "n.d." if v is None else _fmt(v, dec) + suf
+
+    _tabella_kv(doc, [
+        ("Investimento iniziale [€]", _fmt(result.investimento_totale_euro, 2)),
+        ("Risparmio annuale [€]", _fmt(result.risparmio_acquisto_euro, 2)),
+        ("Tasso di interesse [%]", _fmt(va.discount_rate * 100, 1)),
+        ("Vita utile investimento [anni]", str(result.vita_utile_anni)),
+        ("Spese aggiuntive annuali (manutenzione) [€]", _fmt(result.manutenzione_annua_euro, 2)),
+        ("Guadagno da immissione in rete [€]", _fmt(result.ricavo_immissione_euro, 2)),
+        ("Valore attuale netto (VAN) [€]", _fmt(va.van, 2)),
+        ("Tempo di ritorno [anni]", _fmt(vs.tr, 1)),
+        ("Tempo di ritorno attualizzato [anni]", _opt(va.dpp, 1)),
+        ("Tasso interno di rendimento (TIR) [%]", _opt(va.tir, 1, "%")),
+        ("Indice di profitto [p.u.]", _fmt(va.indice_profitto, 3)),
+    ], header=("Valutazione economica senza incentivi", "Valore"))
+
+    # ── Grafico flussi di cassa ──
+    doc.add_heading("Analisi dei flussi di cassa", level=3)
+    buf = grafico_flussi_cassa_fv(
+        fc_attualizzato=va.flussi_cassa,
+        fc_semplice=vs.flussi_cassa,
+        investimento=result.investimento_totale_euro,
+    )
+    doc.add_picture(buf, width=Cm(15))
+    doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 
 def _sezione_relamping(doc: Document, result: RelampingResult) -> None:

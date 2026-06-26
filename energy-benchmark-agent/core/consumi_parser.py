@@ -16,9 +16,54 @@ Formati supportati:
 
 from __future__ import annotations
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import csv
+
+
+def _norm_pod(s: object) -> str:
+    """Normalizza un codice POD per il confronto (strip + upper)."""
+    return str(s).strip().upper()
+
+
+def lista_pod_disponibili(
+    filepath: str | Path,
+    nome_foglio: str = "Input POD orario ATTIVA",
+    col_prima_pod: int = 130,
+) -> List[str]:
+    """
+    Restituisce l'elenco dei codici POD presenti nel foglio multi-POD.
+
+    I codici sono letti dalla riga di intestazione (prima riga) a partire dalla
+    colonna `col_prima_pod` (1-based, default 130 = colonna DZ).
+
+    Returns:
+        Lista di codici POD nell'ordine in cui compaiono nel foglio.
+    """
+    import openpyxl
+    fp = Path(filepath)
+    if not fp.exists():
+        raise FileNotFoundError(f"File consumi non trovato: {fp}")
+
+    wb = openpyxl.load_workbook(fp, data_only=True, read_only=True)
+    if nome_foglio not in wb.sheetnames:
+        raise ValueError(
+            f"Foglio '{nome_foglio}' non trovato. Fogli disponibili: {wb.sheetnames}"
+        )
+    ws = wb[nome_foglio]
+
+    header_row = next(ws.iter_rows(min_col=col_prima_pod, values_only=True), None)
+    if header_row is None:
+        return []
+
+    pod: List[str] = []
+    for v in header_row:
+        if v is None:
+            continue
+        code = str(v).strip()
+        if code:
+            pod.append(code)
+    return pod
 
 
 def _leggi_colonna_consumi_csv(filepath: Path) -> List[float]:
@@ -99,22 +144,27 @@ def parse_consumi_excel_multi_pod(
     filepath: str | Path,
     nome_foglio: str = "Input POD orario ATTIVA",
     col_prima_pod: int = 130,   # colonna DZ = indice 0-based 129, ma iter_rows è 1-based → 130
+    pod_selezionati: Optional[List[str]] = None,
 ) -> List[float]:
     """
     Legge il file consumi nel formato multi-POD orario interno.
 
     Foglio "Input POD orario ATTIVA":
     - Righe = ore dell'anno (8760 righe dati, precedute da header)
-    - Colonne POD dalla colonna DZ (130) in poi
-    - Somma tutti i POD per ogni ora → array di 8760 valori [kWh]
+    - Colonne POD dalla colonna DZ (130) in poi; la riga di header contiene i codici POD
+    - Somma per ogni ora i POD richiesti → array di 8760 valori [kWh]
 
     Args:
         filepath: percorso al file Excel
         nome_foglio: nome del foglio (default "Input POD orario ATTIVA")
         col_prima_pod: indice 1-based della prima colonna POD (default 130 = colonna DZ)
+        pod_selezionati: elenco di codici POD da sommare. Se None o vuoto, somma TUTTI i POD.
 
     Returns:
-        Lista di 8760 valori [kWh/h]
+        Lista di 8760 valori [kWh/h] — somma dei soli POD richiesti
+
+    Raises:
+        ValueError: se nessuno dei POD richiesti è presente nel foglio
     """
     import openpyxl
     fp = Path(filepath)
@@ -128,20 +178,46 @@ def parse_consumi_excel_multi_pod(
         )
     ws = wb[nome_foglio]
 
+    # Insieme dei POD richiesti (normalizzati); None → tutti
+    richiesti = {_norm_pod(p) for p in pod_selezionati} if pod_selezionati else None
+
     orari: List[float] = []
     header_skipped = False
+    col_mask: Optional[List[bool]] = None   # quali colonne sommare (allineate a `row`)
 
     for row in ws.iter_rows(min_col=col_prima_pod, values_only=True):
-        # Salta la prima riga (header)
+        # La prima riga è l'header con i codici POD
         if not header_skipped:
             header_skipped = True
+            if richiesti is not None:
+                col_mask = [
+                    (v is not None and _norm_pod(v) in richiesti) for v in row
+                ]
+                trovati = {
+                    _norm_pod(v) for v, keep in zip(row, col_mask) if keep
+                }
+                mancanti = richiesti - trovati
+                if not trovati:
+                    disponibili = [str(v).strip() for v in row if v not in (None, "")]
+                    raise ValueError(
+                        f"Nessuno dei POD richiesti {sorted(richiesti)} è presente nel "
+                        f"foglio '{nome_foglio}'. POD disponibili: {disponibili}"
+                    )
+                if mancanti:
+                    # Avviso non bloccante: si procede con i POD trovati
+                    import warnings
+                    warnings.warn(
+                        f"POD non trovati e ignorati: {sorted(mancanti)}", stacklevel=2
+                    )
             continue
 
-        # Somma tutti i valori numerici della riga (un valore per POD)
+        # Somma i valori numerici delle colonne selezionate (o tutte)
         totale_ora = 0.0
         has_data = False
-        for v in row:
+        for j, v in enumerate(row):
             if v is None:
+                continue
+            if col_mask is not None and not (j < len(col_mask) and col_mask[j]):
                 continue
             try:
                 totale_ora += float(v)

@@ -248,3 +248,133 @@ def test_calcola_tir_solo_attualizzato(mock_pvgis, consumi_file):
     result = calcola(model, params)
     assert result.van_semplice.tir is None
     assert result.van_attualizzato.tir is not None
+
+
+def test_calcola_progettazione_15pct(mock_pvgis, consumi_file):
+    from core.energy_model import EnergyModel
+    model = EnergyModel(nome_progetto="test", utenze=[])
+    params = {
+        "lat": 40.65, "lon": 8.91,
+        "superfici": [{"id": "T", "slope": 30, "azimuth": 0, "n_pannelli": 20, "potenza_wp": 400}],
+        "percorso_consumi": consumi_file,
+    }
+    result = calcola(model, params)
+    # progettazione = 15% del costo impianto
+    assert abs(result.progettazione_euro - result.costo_impianto_euro * 0.15) < 0.05
+    # investimento totale = impianto + progettazione
+    assert abs(result.investimento_totale_euro
+               - (result.costo_impianto_euro + result.progettazione_euro)) < 0.05
+
+
+def test_calcola_manutenzione_1pct(mock_pvgis, consumi_file):
+    from core.energy_model import EnergyModel
+    model = EnergyModel(nome_progetto="test", utenze=[])
+    params = {
+        "lat": 40.65, "lon": 8.91,
+        "superfici": [{"id": "T", "slope": 30, "azimuth": 0, "n_pannelli": 20, "potenza_wp": 400}],
+        "percorso_consumi": consumi_file,
+    }
+    result = calcola(model, params)
+    # manutenzione = 1% di (impianto + progettazione)
+    assert abs(result.manutenzione_annua_euro - result.investimento_totale_euro * 0.01) < 0.05
+    # risparmio netto = lordo - manutenzione
+    assert abs(result.risparmio_totale_euro
+               - (result.risparmio_lordo_euro - result.manutenzione_annua_euro)) < 0.05
+
+
+def test_calcola_vita_utile_20_anni(mock_pvgis, consumi_file):
+    from core.energy_model import EnergyModel
+    model = EnergyModel(nome_progetto="test", utenze=[])
+    params = {
+        "lat": 40.65, "lon": 8.91,
+        "superfici": [{"id": "T", "slope": 30, "azimuth": 0, "n_pannelli": 20, "potenza_wp": 400}],
+        "percorso_consumi": consumi_file,
+    }
+    result = calcola(model, params)
+    assert result.vita_utile_anni == 20
+    assert len(result.van_attualizzato.flussi_cassa) == 20
+    assert len(result.van_semplice.flussi_cassa) == 20
+
+
+def test_calcola_serie_orarie_salvate(mock_pvgis, consumi_file):
+    from core.energy_model import EnergyModel
+    model = EnergyModel(nome_progetto="test", utenze=[])
+    params = {
+        "lat": 40.65, "lon": 8.91,
+        "superfici": [{"id": "T", "slope": 30, "azimuth": 0, "n_pannelli": 20, "potenza_wp": 400}],
+        "percorso_consumi": consumi_file,
+    }
+    result = calcola(model, params)
+    assert len(result.produzione_oraria) == 8760
+    assert len(result.consumo_orario) == 8760
+
+
+def _scrivi_excel_multi_pod(path: Path, pods: list[str], valori: dict[str, float],
+                            col_prima_pod: int = 1, n_ore: int = 8760) -> None:
+    """Crea un Excel con foglio 'Input POD orario ATTIVA': header POD + n_ore righe costanti."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Input POD orario ATTIVA"
+    for j, pod in enumerate(pods):
+        ws.cell(row=1, column=col_prima_pod + j, value=pod)
+    for r in range(n_ore):
+        for j, pod in enumerate(pods):
+            ws.cell(row=2 + r, column=col_prima_pod + j, value=valori[pod])
+    wb.save(path)
+
+
+def test_lista_pod_disponibili(tmp_path):
+    from core.consumi_parser import lista_pod_disponibili
+    p = tmp_path / "multi.xlsx"
+    _scrivi_excel_multi_pod(p, ["POD_A", "POD_B", "POD_C"],
+                            {"POD_A": 1.0, "POD_B": 2.0, "POD_C": 3.0}, n_ore=10)
+    assert lista_pod_disponibili(p, col_prima_pod=1) == ["POD_A", "POD_B", "POD_C"]
+
+
+def test_selezione_pod_somma_solo_richiesti(tmp_path):
+    from core.consumi_parser import parse_consumi_excel_multi_pod
+    p = tmp_path / "multi.xlsx"
+    _scrivi_excel_multi_pod(p, ["POD_A", "POD_B", "POD_C"],
+                            {"POD_A": 1.0, "POD_B": 2.0, "POD_C": 3.0})
+    # solo POD_A + POD_C → 4.0/ora
+    orari = parse_consumi_excel_multi_pod(p, col_prima_pod=1, pod_selezionati=["POD_A", "POD_C"])
+    assert len(orari) == 8760
+    assert abs(orari[0] - 4.0) < 1e-9
+
+
+def test_selezione_pod_tutti_se_none(tmp_path):
+    from core.consumi_parser import parse_consumi_excel_multi_pod
+    p = tmp_path / "multi.xlsx"
+    _scrivi_excel_multi_pod(p, ["POD_A", "POD_B", "POD_C"],
+                            {"POD_A": 1.0, "POD_B": 2.0, "POD_C": 3.0})
+    orari = parse_consumi_excel_multi_pod(p, col_prima_pod=1, pod_selezionati=None)
+    assert abs(orari[0] - 6.0) < 1e-9
+
+
+def test_selezione_pod_inesistente_solleva(tmp_path):
+    from core.consumi_parser import parse_consumi_excel_multi_pod
+    p = tmp_path / "multi.xlsx"
+    _scrivi_excel_multi_pod(p, ["POD_A"], {"POD_A": 1.0})
+    with pytest.raises(ValueError):
+        parse_consumi_excel_multi_pod(p, col_prima_pod=1, pod_selezionati=["POD_X"])
+
+
+def test_report_fotovoltaico_docx(mock_pvgis, consumi_file, tmp_path):
+    """La generazione del report .docx con sezione FV non deve sollevare eccezioni."""
+    from core.energy_model import EnergyModel
+    from reporting.build_report import costruisci_relazione
+    model = EnergyModel(nome_progetto="test", utenze=[])
+    params = {
+        "lat": 40.65, "lon": 8.91,
+        "superfici": [{"id": "FA18", "slope": 30, "azimuth": 44, "n_pannelli": 50, "potenza_wp": 450}],
+        "percorso_consumi": consumi_file,
+        "pod_selezionati": ["IT001E000001"],
+        "fabbricati": ["Edificio A", "Edificio B"],
+        "edifici": ["Edificio A"],
+    }
+    result = calcola(model, params)
+    out = tmp_path / "report_fv.docx"
+    path = costruisci_relazione([result], str(out))
+    assert Path(path).exists()
+    assert Path(path).stat().st_size > 0
