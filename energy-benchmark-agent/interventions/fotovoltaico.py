@@ -121,8 +121,8 @@ class FVResult(InterventionResult):
     # Economico annuo
     risparmio_acquisto_euro: float
     ricavo_immissione_euro: float
-    risparmio_lordo_euro: float          # acquisto + immissione (prima della manutenzione)
-    risparmio_totale_euro: float         # netto = lordo - manutenzione
+    risparmio_lordo_euro: float
+    risparmio_totale_euro: float
     co2_evitata_kg: float
     tep_risparmiati: float
 
@@ -149,7 +149,6 @@ class FVResult(InterventionResult):
 # ---------------------------------------------------------------------------
 
 def _parse_superfici(superfici_raw: list[dict]) -> list[SuperficieFV]:
-    """Converte lista di dict (da parametri) in lista di SuperficieFV."""
     result = []
     for d in superfici_raw:
         result.append(SuperficieFV(
@@ -165,7 +164,6 @@ def _parse_superfici(superfici_raw: list[dict]) -> list[SuperficieFV]:
 
 
 def _parse_superfici_file(filepath: str) -> list[SuperficieFV]:
-    """Legge la tabella superfici da CSV o Excel."""
     from pathlib import Path
     import csv
 
@@ -197,7 +195,6 @@ def _parse_superfici_file(filepath: str) -> list[SuperficieFV]:
 
     superfici = []
     for i, row in enumerate(rows):
-        # normalizza chiavi
         norm = {k.strip().lower(): v for k, v in row.items() if v not in (None, "")}
 
         def get(*keys):
@@ -241,12 +238,6 @@ def _calcola_autoconsumo(
     produzione: list[float],
     consumo: list[float],
 ) -> tuple[float, float, float]:
-    """
-    Calcola autoconsumo, immissione e prelievo annui.
-
-    Returns:
-        (e_autoconsumata_kwh, e_immessa_kwh, e_prelevata_kwh)
-    """
     auto = imm = prel = 0.0
     for p, c in zip(produzione, consumo):
         auto += min(p, c)
@@ -263,24 +254,10 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     """
     Calcola il benchmark dell'intervento fotovoltaico.
 
-    Args:
-        model: modello energetico (usato per regione e metadati)
-        parametri: dizionario con chiavi:
-            lat (float)                 : latitudine sito [obbligatorio]
-            lon (float)                 : longitudine sito [obbligatorio]
-            superfici (list[dict])      : tabella superfici [obbligatorio se non percorso_superfici]
-            percorso_superfici (str)    : percorso CSV/Excel superfici [alternativo a superfici]
-            percorso_consumi (str)      : percorso file consumi quart'orari [obbligatorio]
-            anno_pvgis (int)            : anno simulazione PVGIS (default 2023)
-            loss (float)                : perdite sistema % (default 14.0)
-            prezzo_kwh (float)          : prezzo acquisto ee (default 0.21)
-            pun_euro_kwh (float)        : prezzo cessione in rete - PUN (default 0.12)
-            pod_selezionati (list[str]) : POD da considerare per l'autoconsumo (default tutti)
-
-    Returns:
-        FVResult con tutti i calcoli energetici ed economici
+    Se parametri contiene '_produzione_oraria_precalcolata' (lista 8760 valori)
+    e '_pvgis_righe' (lista dict per superficie), le chiamate PVGIS vengono saltate
+    e si usano i dati gia' calcolati (es. dalla pipeline GitHub Actions).
     """
-    # --- Parametri ---
     lat = float(parametri["lat"])
     lon = float(parametri["lon"])
     anno = int(parametri.get("anno_pvgis", 2023))
@@ -288,15 +265,12 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     prezzo_kwh = float(parametri.get("prezzo_kwh", _PREZZO_KWH_DEFAULT))
     pun = float(parametri.get("pun_euro_kwh", _PUN_DEFAULT))
 
-    # POD selezionati per l'intervento (None/[] = tutti)
     pod_sel_raw = parametri.get("pod_selezionati") or []
     pod_selezionati = [str(p).strip() for p in pod_sel_raw if str(p).strip()]
 
-    # Metadati descrittivi per il report (opzionali)
     fabbricati = [str(x) for x in (parametri.get("fabbricati") or [])]
     edifici = [str(x) for x in (parametri.get("edifici") or [])]
 
-    # --- Superfici ---
     if "superfici" in parametri:
         superfici = _parse_superfici(parametri["superfici"])
     elif "percorso_superfici" in parametri:
@@ -307,11 +281,9 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     if not superfici:
         raise ValueError("Nessuna superficie FV definita")
 
-    # --- Consumi ---
     if "percorso_consumi" not in parametri:
         raise ValueError("parametri deve contenere 'percorso_consumi'")
     percorso_consumi = str(parametri["percorso_consumi"])
-    # Auto-detect formato: Excel multi-POD (foglio "Input POD orario ATTIVA") o CSV quart'orario
     if percorso_consumi.lower().endswith((".xlsx", ".xls")):
         try:
             import openpyxl
@@ -330,68 +302,76 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     else:
         consumo_orario = parse_consumi_quart_orari(percorso_consumi)
 
-    # --- PVGIS: producibilità oraria per superficie e totale ---
-    import time
-
+    # PVGIS: usa dati precalcolati se disponibili, altrimenti chiama l'API
     produzione_totale: list[float] = [0.0] * 8760
     righe: list[FVRiga] = []
 
-    for i, sup in enumerate(superfici):
-        if i > 0:
-            time.sleep(0.5)
-        prod_sup = get_producibilita_oraria(
-            lat=lat, lon=lon,
-            peak_power_kwp=sup.peak_power_kwp,
-            slope=sup.slope, aspect=sup.azimuth,
-            anno=anno, loss=loss,
-            pvtech=sup.pvtech, mounting=sup.mounting,
-        )
-        n = min(len(prod_sup), 8760)
-        for h in range(n):
-            produzione_totale[h] += prod_sup[h]
-        e_sup = sum(prod_sup[:n])
-        h_eq = e_sup / sup.peak_power_kwp if sup.peak_power_kwp > 0 else 0.0
-        righe.append(FVRiga(
-            superficie_id=sup.id,
-            slope=sup.slope,
-            azimuth=sup.azimuth,
-            n_pannelli=sup.n_pannelli,
-            potenza_pannello_wp=sup.potenza_pannello_wp,
-            peak_power_kwp=round(sup.peak_power_kwp, 3),
-            e_prodotta_kwh=round(e_sup, 1),
-            ore_equivalenti=round(h_eq, 1),
-        ))
+    if "_produzione_oraria_precalcolata" in parametri:
+        produzione_totale = list(parametri["_produzione_oraria_precalcolata"])[:8760]
+        for raw_riga in parametri.get("_pvgis_righe", []):
+            sup_match = next((s for s in superfici if s.id == raw_riga["superficie_id"]), None)
+            if sup_match is None:
+                continue
+            righe.append(FVRiga(
+                superficie_id=raw_riga["superficie_id"],
+                slope=raw_riga["slope"],
+                azimuth=raw_riga["azimuth"],
+                n_pannelli=raw_riga["n_pannelli"],
+                potenza_pannello_wp=raw_riga["potenza_pannello_wp"],
+                peak_power_kwp=round(raw_riga["peak_power_kwp"], 3),
+                e_prodotta_kwh=round(raw_riga["e_prodotta_kwh"], 1),
+                ore_equivalenti=round(raw_riga["ore_equivalenti"], 1),
+            ))
+    else:
+        import time
+        for i, sup in enumerate(superfici):
+            if i > 0:
+                time.sleep(0.5)
+            prod_sup = get_producibilita_oraria(
+                lat=lat, lon=lon,
+                peak_power_kwp=sup.peak_power_kwp,
+                slope=sup.slope, aspect=sup.azimuth,
+                anno=anno, loss=loss,
+                pvtech=sup.pvtech, mounting=sup.mounting,
+            )
+            n = min(len(prod_sup), 8760)
+            for h in range(n):
+                produzione_totale[h] += prod_sup[h]
+            e_sup = sum(prod_sup[:n])
+            h_eq = e_sup / sup.peak_power_kwp if sup.peak_power_kwp > 0 else 0.0
+            righe.append(FVRiga(
+                superficie_id=sup.id,
+                slope=sup.slope,
+                azimuth=sup.azimuth,
+                n_pannelli=sup.n_pannelli,
+                potenza_pannello_wp=sup.potenza_pannello_wp,
+                peak_power_kwp=round(sup.peak_power_kwp, 3),
+                e_prodotta_kwh=round(e_sup, 1),
+                ore_equivalenti=round(h_eq, 1),
+            ))
 
-    # --- Aggregati impianto ---
     potenza_totale = sum(s.peak_power_kwp for s in superfici)
     e_prodotta = sum(produzione_totale)
     ore_eq_impianto = e_prodotta / potenza_totale if potenza_totale > 0 else 0.0
 
-    # --- Autoconsumo ---
     e_auto, e_imm, e_prel = _calcola_autoconsumo(produzione_totale, consumo_orario)
     quota_auto = e_auto / e_prodotta if e_prodotta > 0 else 0.0
     consumo_pod = sum(consumo_orario)
 
-    # --- Investimento: impianto + progettazione (15% del costo impianto) ---
-    # Prezziario FV: sempre Marche (direttiva di progetto), non la regione del sito.
     costo_imp = costo_impianto(potenza_totale, _REGIONE_PREZZIARIO_FV)
     progettazione = costo_imp * _QUOTA_PROGETTAZIONE
     investimento_totale = costo_imp + progettazione
     costo_unitario = costo_imp / potenza_totale if potenza_totale > 0 else 0.0
 
-    # --- Manutenzione annua: 1% di (impianto + progettazione) ---
     manutenzione_annua = investimento_totale * _QUOTA_MANUTENZIONE
 
-    # --- Economico annuo ---
-    risp_acquisto = e_auto * prezzo_kwh          # mancato acquisto da rete
-    ricavo_imm = e_imm * pun                      # ritiro dedicato (PUN)
+    risp_acquisto = e_auto * prezzo_kwh
+    ricavo_imm = e_imm * pun
     risp_lordo = risp_acquisto + ricavo_imm
-    risp_netto = risp_lordo - manutenzione_annua  # flusso di cassa annuo netto
-    # CO2/TEP riferiti al mancato prelievo da rete (autoconsumo), come da tabella PRE/POST del POD
+    risp_netto = risp_lordo - manutenzione_annua
     co2_evitata = e_auto * _FATTORE_CO2
     tep_risparmiati = e_auto * _FATTORE_TEP
 
-    # --- 2 scenari VAN su vita utile 20 anni (FV: nessun incentivo né CB) ---
     scenari_config = [
         ("VAN Attualizzato", _DISCOUNT_RATE),
         ("VAN Semplice",     0.0),

@@ -1,0 +1,135 @@
+name: PVGIS Fetch
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID univoco della run (usato per il file di output)"
+        required: true
+      lat:
+        description: "Latitudine sito"
+        required: true
+      lon:
+        description: "Longitudine sito"
+        required: true
+      superfici_json:
+        description: "JSON array superfici FV"
+        required: true
+      anno_pvgis:
+        description: "Anno PVGIS"
+        required: false
+        default: "2023"
+      loss:
+        description: "Perdite sistema [%]"
+        required: false
+        default: "14"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installa dipendenze
+        run: pip install requests
+
+      - name: Chiama PVGIS per ogni superficie
+        env:
+          SUPERFICI_JSON: ${{ inputs.superfici_json }}
+          LAT: ${{ inputs.lat }}
+          LON: ${{ inputs.lon }}
+          ANNO: ${{ inputs.anno_pvgis }}
+          LOSS: ${{ inputs.loss }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          python - <<'PYEOF'
+          import json, os, requests, sys
+
+          lat   = float(os.environ["LAT"])
+          lon   = float(os.environ["LON"])
+          anno  = int(os.environ["ANNO"])
+          loss  = float(os.environ["LOSS"])
+          run_id = os.environ["RUN_ID"]
+          superfici = json.loads(os.environ["SUPERFICI_JSON"])
+
+          BASE_URL = "https://re.jrc.ec.europa.eu/api/v5_2/seriescalc"
+
+          produzione_totale = [0.0] * 8760
+          righe = []
+
+          for sup in superfici:
+              kwp = sup["n_pannelli"] * sup["potenza_pannello_wp"] / 1000.0
+              params = {
+                  "lat": lat, "lon": lon,
+                  "peakpower": kwp,
+                  "loss": loss,
+                  "angle": sup["slope"],
+                  "aspect": sup["azimuth"],
+                  "pvcalculation": 1,
+                  "pvtechchoice": sup.get("pvtech", "crystSi"),
+                  "mountingplace": sup.get("mounting", "free"),
+                  "outputformat": "json",
+                  "startyear": anno,
+                  "endyear": anno,
+                  "browser": 0,
+              }
+              print(f"  PVGIS: {sup['id']} ({kwp:.2f} kWp)...", flush=True)
+              r = requests.get(BASE_URL, params=params, timeout=60)
+              r.raise_for_status()
+              hourly = r.json()["outputs"]["hourly"]
+              if len(hourly) != 8760:
+                  print(f"  ATTENZIONE: {len(hourly)} valori (attesi 8760)", flush=True)
+              prod_sup = [h["P"] / 1000.0 for h in hourly]  # W -> kWh
+              for i, v in enumerate(prod_sup):
+                  produzione_totale[i] += v
+              e_prod = sum(prod_sup)
+              ore_eq = e_prod / kwp if kwp > 0 else 0
+              print(f"    -> {e_prod:,.0f} kWh/anno, {ore_eq:.0f} h equivalenti", flush=True)
+              righe.append({
+                  "superficie_id": sup["id"],
+                  "slope": sup["slope"],
+                  "azimuth": sup["azimuth"],
+                  "n_pannelli": sup["n_pannelli"],
+                  "potenza_pannello_wp": sup["potenza_pannello_wp"],
+                  "peak_power_kwp": kwp,
+                  "e_prodotta_kwh": e_prod,
+                  "ore_equivalenti": ore_eq,
+                  "produzione_oraria": prod_sup,
+              })
+
+          output = {
+              "run_id": run_id,
+              "lat": lat, "lon": lon,
+              "anno_pvgis": anno,
+              "produzione_oraria_totale": produzione_totale,
+              "superfici": righe,
+              "e_prodotta_totale_kwh": sum(produzione_totale),
+          }
+
+          out_path = f"pvgis_results/{run_id}.json"
+          import pathlib
+          pathlib.Path("pvgis_results").mkdir(exist_ok=True)
+          with open(out_path, "w") as f:
+              json.dump(output, f)
+          print(f"\nSalvato: {out_path}")
+          print(f"Produzione totale: {sum(produzione_totale):,.0f} kWh/anno")
+          PYEOF
+
+      - name: Committa risultati PVGIS
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pvgis_results/
+          git commit -m "pvgis: risultati run ${{ inputs.run_id }}"
+          git push
