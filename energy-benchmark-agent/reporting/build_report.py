@@ -610,7 +610,7 @@ def _sezione_economica_fv(doc: Document, result: "FVResult", pod_nome: str) -> N
         "Si riportano di seguito i dati relativi all'installazione dell'impianto di produzione "
         "fotovoltaica e l'analisi economica, con il calcolo del tempo di ritorno semplice ed "
         "attualizzato e dei principali indicatori economici. Il costo di investimento iniziale è "
-        "stato valutato secondo prezzi indicati dal prezzario regionale, per un totale di "
+        "stato valutato secondo prezzi indicati dal prezzario regionale delle Marche, per un totale di "
         f"{_fmt(inv_per_kwp, 0)} €/kWp tenendo conto anche dei costi legati alla "
         f"progettazione. Per la stima dei risparmi è stato considerato un costo medio dell'energia "
         f"pari a {_fmt(result.prezzo_kwh, 3)} €/kWh. Si è stimato un autoconsumo del "

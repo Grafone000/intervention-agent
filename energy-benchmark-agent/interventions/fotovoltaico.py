@@ -16,11 +16,13 @@ Input richiesti (in parametri):
     fabbricati (list[str])   : fabbricati sotto il POD (descrittivo, per il report)
     edifici (list[str])      : edifici considerati per le superfici (descrittivo, per il report)
 
-Modello economico:
+Modello economico (direttive di progetto):
+    prezziario impianto = SEMPRE Marche (a prescindere dalla regione del sito)
     investimento = costo_impianto + 15% progettazione
     manutenzione annua = 1% di (costo_impianto + progettazione)
     flusso netto annuo = autoconsumo·prezzo + immissione·PUN − manutenzione
     vita utile = 20 anni, tasso di sconto = 6%
+    nessun incentivo, nessun Certificato Bianco
 """
 
 from __future__ import annotations
@@ -46,6 +48,9 @@ _FATTORE_TEP = 0.000187           # tep/kWh
 _QUOTA_PROGETTAZIONE = 0.15       # 15% del costo impianto
 _QUOTA_MANUTENZIONE = 0.01        # 1% annuo di (impianto + progettazione)
 _VITA_UTILE_ANNI = 20
+# Il costo dell'impianto FV si valuta SEMPRE con il prezziario regionale delle Marche,
+# indipendentemente dalla regione del sito (direttiva di progetto).
+_REGIONE_PREZZIARIO_FV = "marche"
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +373,8 @@ def calcola(model: EnergyModel, parametri: Dict[str, Any]) -> FVResult:
     consumo_pod = sum(consumo_orario)
 
     # --- Investimento: impianto + progettazione (15% del costo impianto) ---
-    costo_imp = costo_impianto(potenza_totale, model.regione)
+    # Prezziario FV: sempre Marche (direttiva di progetto), non la regione del sito.
+    costo_imp = costo_impianto(potenza_totale, _REGIONE_PREZZIARIO_FV)
     progettazione = costo_imp * _QUOTA_PROGETTAZIONE
     investimento_totale = costo_imp + progettazione
     costo_unitario = costo_imp / potenza_totale if potenza_totale > 0 else 0.0
