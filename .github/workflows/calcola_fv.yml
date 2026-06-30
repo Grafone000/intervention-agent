@@ -1,0 +1,134 @@
+name: Calcolo Fotovoltaico
+
+on:
+  workflow_dispatch:
+    inputs:
+      modello:
+        description: "Nome file modello energetico (.xlsx)"
+        required: true
+        default: "Modello_energetico.xlsx"
+      consumi:
+        description: "Nome file consumi multi-POD (.xlsx)"
+        required: true
+        default: "Analisi_Consumi.xlsx"
+      pod:
+        description: "Codici POD separati da virgola (es: IT001E02519429)"
+        required: true
+      pun:
+        description: "PUN medio [€/kWh] (es: 0.108)"
+        required: true
+        default: "0.108"
+      superfici_json:
+        description: |
+          Superfici FV in JSON inline (lascia vuoto per usare il modello).
+          Formato: [{"id":"Falda Sud","slope":30,"azimuth":0,"n_pannelli":100,"potenza_wp":400},...]
+        required: false
+      prezzo_kwh:
+        description: "Prezzo energia [€/kWh] (vuoto = dal modello)"
+        required: false
+      anno_pvgis:
+        description: "Anno PVGIS"
+        required: false
+        default: "2023"
+      fabbricati:
+        description: "Nomi fabbricati separati da virgola (descrittivo)"
+        required: false
+      edifici:
+        description: "Nomi edifici separati da virgola (descrittivo)"
+        required: false
+
+jobs:
+  calcola:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: energy-benchmark-agent/requirements.txt
+
+      - name: Installa dipendenze
+        run: pip install -r energy-benchmark-agent/requirements.txt
+
+      - name: Scarica artifact input
+        uses: actions/download-artifact@v4
+        with:
+          name: fv-input-files
+          path: input_files/
+        continue-on-error: true
+
+      - name: Prepara file di input
+        run: |
+          MODELLO_SRC=""
+          CONSUMI_SRC=""
+          for d in input_files energy-benchmark-agent/data; do
+            [ -z "$MODELLO_SRC" ] && [ -f "$d/${{ inputs.modello }}" ] && MODELLO_SRC="$d/${{ inputs.modello }}"
+            [ -z "$CONSUMI_SRC" ] && [ -f "$d/${{ inputs.consumi }}" ]  && CONSUMI_SRC="$d/${{ inputs.consumi }}"
+          done
+          if [ -z "$MODELLO_SRC" ]; then
+            echo "ERRORE: file modello '${{ inputs.modello }}' non trovato."
+            echo "Carica i file come artifact 'fv-input-files' prima di avviare il workflow."
+            exit 1
+          fi
+          if [ -z "$CONSUMI_SRC" ]; then
+            echo "ERRORE: file consumi '${{ inputs.consumi }}' non trovato."
+            exit 1
+          fi
+          cp "$MODELLO_SRC" modello.xlsx
+          cp "$CONSUMI_SRC" consumi.xlsx
+          echo "Modello:  $MODELLO_SRC"
+          echo "Consumi:  $CONSUMI_SRC"
+
+      - name: Scrivi superfici.json (se fornite)
+        if: ${{ inputs.superfici_json != '' }}
+        run: echo '${{ inputs.superfici_json }}' > superfici.json
+
+      - name: Costruisci argomenti CLI
+        id: cli_args
+        run: |
+          PODS=$(echo "${{ inputs.pod }}" | tr ',' ' ')
+          ARGS="--modello modello.xlsx --consumi consumi.xlsx --pod $PODS --pun ${{ inputs.pun }} --out report_fv.docx"
+          [ -f superfici.json ] && ARGS="$ARGS --superfici superfici.json"
+          [ -n "${{ inputs.prezzo_kwh }}" ] && ARGS="$ARGS --prezzo-kwh ${{ inputs.prezzo_kwh }}"
+          [ -n "${{ inputs.anno_pvgis }}" ] && ARGS="$ARGS --anno-pvgis ${{ inputs.anno_pvgis }}"
+          if [ -n "${{ inputs.fabbricati }}" ]; then
+            FABS=$(echo "${{ inputs.fabbricati }}" | sed "s/,/ /g")
+            ARGS="$ARGS --fabbricati $FABS"
+          fi
+          if [ -n "${{ inputs.edifici }}" ]; then
+            EDIF=$(echo "${{ inputs.edifici }}" | sed "s/,/ /g")
+            ARGS="$ARGS --edifici $EDIF"
+          fi
+          echo "args=$ARGS" >> $GITHUB_OUTPUT
+          echo "Comando: python scripts/run_fotovoltaico.py $ARGS"
+
+      - name: Esegui calcolo FV
+        working-directory: energy-benchmark-agent
+        run: |
+          PYTHONPATH=. python scripts/run_fotovoltaico.py ${{ steps.cli_args.outputs.args }}
+
+      - name: Carica report come artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-fotovoltaico
+          path: energy-benchmark-agent/report_fv.docx
+          retention-days: 30
+
+      - name: Riepilogo
+        run: |
+          echo "### Calcolo FV completato" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parametro | Valore |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| POD | ${{ inputs.pod }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| PUN | ${{ inputs.pun }} €/kWh |" >> $GITHUB_STEP_SUMMARY
+          echo "| Anno PVGIS | ${{ inputs.anno_pvgis }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Il report è disponibile negli Artifacts di questa run." >> $GITHUB_STEP_SUMMARY
