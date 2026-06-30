@@ -602,12 +602,16 @@ def _sezione_economica_fv(doc: Document, result: "FVResult", pod_nome: str) -> N
     va = result.van_attualizzato
     vs = result.van_semplice
 
+    # €/kWp riferito all'investimento totale (impianto + progettazione), come nel riferimento
+    inv_per_kwp = (result.investimento_totale_euro / result.potenza_totale_kwp
+                   if result.potenza_totale_kwp > 0 else 0.0)
+
     doc.add_paragraph(
         "Si riportano di seguito i dati relativi all'installazione dell'impianto di produzione "
         "fotovoltaica e l'analisi economica, con il calcolo del tempo di ritorno semplice ed "
         "attualizzato e dei principali indicatori economici. Il costo di investimento iniziale è "
         "stato valutato secondo prezzi indicati dal prezzario regionale, per un totale di "
-        f"{_fmt(result.costo_per_kwp, 0)} €/kWp tenendo conto anche dei costi legati alla "
+        f"{_fmt(inv_per_kwp, 0)} €/kWp tenendo conto anche dei costi legati alla "
         f"progettazione. Per la stima dei risparmi è stato considerato un costo medio dell'energia "
         f"pari a {_fmt(result.prezzo_kwh, 3)} €/kWh. Si è stimato un autoconsumo del "
         f"{_fmt(result.quota_autoconsumo * 100, 1)}%, analizzando i consumi mensili e le curve di "
@@ -661,21 +665,23 @@ def _sezione_economica_fv(doc: Document, result: "FVResult", pod_nome: str) -> N
     # ── Tabella valutazione economica senza incentivi ──
     doc.add_heading("Valutazione economica", level=3)
 
-    def _opt(v, dec=2, suf=""):
-        return "n.d." if v is None else _fmt(v, dec) + suf
+    # TR attualizzato: se il VAN resta negativo entro la vita utile, non rientra → "> N anni"
+    dpp_txt = f"{_fmt(va.dpp, 2)}" if va.dpp is not None else f"> {result.vita_utile_anni} anni"
+    tir_txt = "n.d." if va.tir is None else _fmt(va.tir, 2) + "%"
 
     _tabella_kv(doc, [
-        ("Investimento iniziale [€]", _fmt(result.investimento_totale_euro, 2)),
-        ("Risparmio annuale [€]", _fmt(result.risparmio_acquisto_euro, 2)),
-        ("Tasso di interesse [%]", _fmt(va.discount_rate * 100, 1)),
+        ("Investimento iniziale [€]", _fmt(result.investimento_totale_euro, 0)),
+        ("Risparmio annuale [€]", _fmt(result.risparmio_acquisto_euro, 0)),
+        ("Tasso di interesse [%]", _fmt(va.discount_rate * 100, 1) + "%"),
         ("Vita utile investimento [anni]", str(result.vita_utile_anni)),
-        ("Spese aggiuntive annuali (manutenzione) [€]", _fmt(result.manutenzione_annua_euro, 2)),
-        ("Guadagno da immissione in rete [€]", _fmt(result.ricavo_immissione_euro, 2)),
-        ("Valore attuale netto (VAN) [€]", _fmt(va.van, 2)),
-        ("Tempo di ritorno [anni]", _fmt(vs.tr, 1)),
-        ("Tempo di ritorno attualizzato [anni]", _opt(va.dpp, 1)),
-        ("Tasso interno di rendimento (TIR) [%]", _opt(va.tir, 1, "%")),
-        ("Indice di profitto [p.u.]", _fmt(va.indice_profitto, 3)),
+        ("Spese aggiuntive annuali (manutenzione ordinaria e gestione) [€]",
+         _fmt(result.manutenzione_annua_euro, 0)),
+        ("Guadagno da immissione in rete [€]", _fmt(result.ricavo_immissione_euro, 0)),
+        ("Valore attuale netto (VAN) [€]", _fmt(va.van, 0)),
+        ("Tempo di ritorno [anni]", _fmt(vs.tr, 2)),
+        ("Tempo di ritorno attualizzato [anni]", dpp_txt),
+        ("Tasso interno di rendimento (TIR) [%]", tir_txt),
+        ("Indice di profitto [p.u.]", _fmt(va.indice_profitto, 2)),
     ], header=("Valutazione economica senza incentivi", "Valore"))
 
     # ── Grafico flussi di cassa ──
