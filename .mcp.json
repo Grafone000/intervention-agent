@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "gemini-notebook-mcp": {
+      "command": "uvx",
+      "args": ["--from", "notebooklm-mcp-cli", "notebooklm-mcp"]
+    }
+  }
+}
